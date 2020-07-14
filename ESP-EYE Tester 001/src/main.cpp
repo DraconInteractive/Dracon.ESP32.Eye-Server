@@ -1,15 +1,32 @@
-#include "WiFi.h"
+//#define OLD
+#define NEW
+#define RTSP
+#define WEBSERVER
+
+#pragma region declarations
+#ifdef OLD
 #include "esp_camera.h"
 #include "esp_timer.h"
+#include <ESPAsyncWebServer.h>
+#endif
+
+#include "WiFi.h"
 #include "img_converters.h"
 #include "Arduino.h"
 #include "soc/soc.h"           // Disable brownour problems
 #include "soc/rtc_cntl_reg.h"  // Disable brownour problems
 #include "driver/rtc_io.h"
-#include <ESPAsyncWebServer.h>
+#include "WebServer.h"
 #include <StringArray.h>
 #include <SPIFFS.h>
 #include <FS.h>
+#include "AsyncUDP.h"
+
+#ifdef NEW
+#include "CRtspSession.h"
+#include "OV2640.h"
+#include "OV2640Streamer.h"
+#endif
 
 #define PWDN_GPIO_NUM    -1
 #define RESET_GPIO_NUM   -1
@@ -28,6 +45,9 @@
 #define HREF_GPIO_NUM    27
 #define PCLK_GPIO_NUM    25
 
+#pragma endregion
+
+#pragma region HTML
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
 <head>
@@ -67,60 +87,16 @@ const char index_html[] PROGMEM = R"rawliteral(
   function isOdd(n) { return Math.abs(n % 2) == 1; }
 </script>
 </html>)rawliteral";
-
-const char* ssid = "SJA_MODEM_01";
-const char* password = "12345678";
-
+#pragma endregion
+#ifdef OLD
 boolean takeNewPhoto;
 #define FILE_PHOTO "/photo.jpg"
-
 AsyncWebServer server(80);
+AsyncUDP udp;
+const char* ap_ssid = "SJA_MODEM_01";
+const char* ap_password = "12345678";
 
-void BlinkBoth_Async () {
-  digitalWrite(GPIO_NUM_21, HIGH);
-  digitalWrite(GPIO_NUM_22, LOW);
-  delay(250);
-  digitalWrite(GPIO_NUM_22, HIGH);
-  digitalWrite(GPIO_NUM_21, LOW);
-}
-
-void BlinkBoth_Sync (int interval) {
-  digitalWrite(GPIO_NUM_21, HIGH);
-  digitalWrite(GPIO_NUM_22, HIGH);
-  delay(interval);
-  digitalWrite(GPIO_NUM_22, LOW);
-  digitalWrite(GPIO_NUM_21, LOW);
-  delay(interval);
-  digitalWrite(GPIO_NUM_21, HIGH);
-  digitalWrite(GPIO_NUM_22, HIGH);
-}
-
-void BlinkRed (int interval) {
-  digitalWrite(GPIO_NUM_21, HIGH);
-  delay(interval);
-  digitalWrite(GPIO_NUM_21, LOW);
-  delay(interval);
-  digitalWrite(GPIO_NUM_21, HIGH);
-}
-
-void BlinkWhite (int interval) {
-  digitalWrite(GPIO_NUM_22, HIGH);
-  delay(interval);
-  digitalWrite(GPIO_NUM_22, LOW);
-  delay(interval);
-  digitalWrite(GPIO_NUM_22, HIGH);
-}
-
-void PinSetup () {
-  pinMode(GPIO_NUM_21, OUTPUT);
-  pinMode(GPIO_NUM_22, OUTPUT);
-  digitalWrite(GPIO_NUM_21, HIGH);
-  digitalWrite(GPIO_NUM_22, LOW);
-
-  pinMode(13, INPUT_PULLUP);
-  pinMode(14, INPUT_PULLUP);
-}
-
+#pragma region espcam
 // Check if photo capture was successful
 bool checkPhoto( fs::FS &fs ) {
   File f_pic = fs.open( FILE_PHOTO );
@@ -170,34 +146,7 @@ void capturePhotoSaveSpiffs( void ) {
   } while ( !ok );
 }
 
-void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(115200);
-
-  PinSetup();
-
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    BlinkRed(350);
-    delay(50);
-    Serial.println("#Connecting#");
-  }
-  Serial.println("Wifi Connected");
-  Serial.println(WiFi.status());
-  delay(100);
-
-  if(!SPIFFS.begin(true)) {
-    digitalWrite(GPIO_NUM_22, HIGH);
-    ESP.deepSleep(60);
-  } else {
-    delay(500);
-  }
-
-  Serial.print("IP Address: http://");
-  Serial.println(WiFi.localIP());
-
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
-
+void CamInit () {
   // OV2640 camera module
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -223,8 +172,8 @@ void setup() {
 
   if (psramFound()) {
     config.frame_size = FRAMESIZE_UXGA;
-    config.jpeg_quality = 8;
-    config.fb_count = 2;
+    config.jpeg_quality = 16;
+    config.fb_count = 1;
     Serial.println("PSRAM Found");
   } else {
     config.frame_size = FRAMESIZE_SVGA;
@@ -240,6 +189,190 @@ void setup() {
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x", err);
   }
+}
+#pragma endregion
+
+void InitUDP () {
+  Serial.print("Initialising UDP Stream");
+  IPAddress _targetIP = IPAddress(192,168,1,1);
+  if (udp.listenMulticast(IPAddress(239,3,3,4), 11000)) {
+    Serial.println ("UDP Listening on 239.3.3.4:11000");
+
+    udp.onPacket([_targetIP](AsyncUDPPacket packet) {
+      Serial.printf("Packet received, UDP.\nLength: %i\nData: ");
+      Serial.write(packet.data(), packet.length());
+      Serial.println();
+      packet.print("Data received on DraconESP");
+    });
+  }
+  delay(100);
+}
+
+void InitSTAWifi () {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ap_ssid, ap_password);
+  while (WiFi.status() != WL_CONNECTED) {
+    BlinkRed(350);
+    delay(50);
+    Serial.println("#Connecting#");
+  }
+  Serial.println("Wifi Connected");
+  Serial.println(WiFi.status());
+
+  delay(100);
+
+  Serial.println("IP Address: http://");
+  Serial.println(WiFi.localIP());
+  
+}
+#endif
+
+#ifdef NEW 
+WebServer server(80);
+OV2640 cam;
+WiFiServer rtspServer(8554);
+CStreamer *streamer;
+CRtspSession *session;
+IPAddress softIP;
+void InitSoftAP () {
+  const char *hostname = "draconESP";
+  WiFi.mode(WIFI_MODE_AP);
+  WiFi.persistent(false);
+  bool result = WiFi.softAP(hostname, "12345678");
+  WiFi.softAPConfig(IPAddress(192,168,1,1), IPAddress(192,168,1,1), IPAddress(255,255,255,0));
+  
+  delay(1000);
+  if (!result) {
+    Serial.println("Soft AP Config Failed");
+    return;
+  } else {
+    Serial.println("Soft AP Config Success");
+    Serial.print("Mac ADDR: ");
+    Serial.println(WiFi.softAPmacAddress());
+    softIP = WiFi.softAPIP();
+    Serial.println(softIP);
+  }
+}
+
+void handle_jpg_stream(void) {
+  WiFiClient client = server.client();
+  String response = "HTTP/1.1 200 OK\r\n";
+  response += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
+  server.sendContent(response);
+
+  while (1) {
+    cam.run();
+    if (!client.connected()) {
+      break;
+    }
+    response = "--frame\r\n";
+    response += "Content-Type: image/jpeg\r\n\r\n";
+    server.sendContent(response);
+
+    client.write((char *)cam.getfb(), cam.getSize());
+    server.sendContent("\r\n");
+    if (!client.connected()) {
+      break;
+    }
+  }
+}
+
+void handle_jpg(void) {
+  WiFiClient client = server.client();
+
+  cam.run();
+  if (!client.connected()) {
+    return;
+  }
+  String response = "HTTP/1.1 200 OK\r\n";
+  response += "Content-disposition: inline; filename=capture.jpg\r\n";
+  response += "Content-type: image/jpeg\r\n\r\n";
+  server.sendContent(response);
+  client.write((char *)cam.getfb(), cam.getSize());
+}
+
+void handleNotFound() {
+  String message = "Server is running!\n\n";
+    message += "URI: ";
+    message += server.uri();
+    message += "\nMethod: ";
+    message += (server.method() == HTTP_GET) ? "GET" : "POST";
+    message += "\nArguments: ";
+    message += server.args();
+    message += "\n";
+    server.send(200, "text/plain", message);
+}
+
+#endif
+
+#pragma region Blink
+void BlinkBoth_Async () {
+  digitalWrite(GPIO_NUM_21, HIGH);
+  digitalWrite(GPIO_NUM_22, LOW);
+  delay(250);
+  digitalWrite(GPIO_NUM_22, HIGH);
+  digitalWrite(GPIO_NUM_21, LOW);
+}
+
+void BlinkBoth_Sync (int interval) {
+  digitalWrite(GPIO_NUM_21, HIGH);
+  digitalWrite(GPIO_NUM_22, HIGH);
+  delay(interval);
+  digitalWrite(GPIO_NUM_22, LOW);
+  digitalWrite(GPIO_NUM_21, LOW);
+  delay(interval);
+  digitalWrite(GPIO_NUM_21, HIGH);
+  digitalWrite(GPIO_NUM_22, HIGH);
+}
+
+void BlinkRed (int interval) {
+  digitalWrite(GPIO_NUM_21, HIGH);
+  delay(interval);
+  digitalWrite(GPIO_NUM_21, LOW);
+  delay(interval);
+  digitalWrite(GPIO_NUM_21, HIGH);
+}
+
+void BlinkWhite (int interval) {
+  digitalWrite(GPIO_NUM_22, HIGH);
+  delay(interval);
+  digitalWrite(GPIO_NUM_22, LOW);
+  delay(interval);
+  digitalWrite(GPIO_NUM_22, HIGH);
+}
+#pragma endregion
+
+void PinSetup () {
+  pinMode(GPIO_NUM_21, OUTPUT);
+  pinMode(GPIO_NUM_22, OUTPUT);
+  digitalWrite(GPIO_NUM_21, HIGH);
+  digitalWrite(GPIO_NUM_22, LOW);
+
+  pinMode(13, INPUT_PULLUP);
+  pinMode(14, INPUT_PULLUP);
+}
+
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+  while (!Serial) {
+    ;
+  }
+  PinSetup();
+
+#ifdef OLD
+  InitSTAWifi();
+  if(!SPIFFS.begin(true)) {
+    Serial.print("SPIFFS up failed");
+    ESP.restart();
+  } else {
+    delay(500);
+  }
+
+  CamInit();
+  cam.init(esp32cam_config);
+  //InitUDP();
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send_P(200, "text/html", index_html);
@@ -253,19 +386,75 @@ void setup() {
   server.on("/saved-photo", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, FILE_PHOTO, "image/jpg", false);
   });
-
-  // Start server
   server.begin();
+#endif
 
-  Serial.println("Setup Finished. Server Active.");
+#ifdef NEW
+  InitSoftAP();
+  
+  #ifdef WEBSERVER
+    server.on("/", HTTP_GET, handle_jpg_stream);
+    server.on("/jpg", HTTP_GET, handle_jpg);
+    server.onNotFound(handleNotFound);
+    server.begin();
+  #endif
+  #ifdef RTSP
+    rtspServer.begin();
+  #endif
+#endif
+
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  Serial.print("Setup Finished. Server Active at ");
+  Serial.print(WiFi.localIP());
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
+#ifdef OLD
   if (takeNewPhoto) {
     capturePhotoSaveSpiffs();
     takeNewPhoto = false;
   }
+#endif
+  #ifdef WEBSERVER
+    server.handleClient();
+  #endif
+
+  #ifdef RTSP
+    uint32_t msecPerFrame = 100;
+    static uint32_t lastimage = millis();
+
+    if (session) {
+      session->handleRequests(0);
+      uint32_t now = millis();
+      if (now > lastimage + msecPerFrame || now < lastimage) {
+        session->broadcastCurrentFrame(now);
+        lastimage = now;
+
+        now = millis();
+        if (now > lastimage + msecPerFrame) {
+          printf("Warning! Exceeding max framerate of %d ms\n", now - lastimage);
+        }
+      }
+
+      if (session->m_stopped) {
+        delete session;
+        delete streamer;
+        session = NULL;
+        streamer = NULL;
+      }
+    } else {
+      WiFiClient client = rtspServer.accept();
+      if (client) {
+        streamer = new OV2640Streamer(&client, cam);
+        session = new CRtspSession(&client, streamer);
+        Serial.print("Client: ");
+        Serial.print(client.remoteIP());
+        Serial.println();
+      }
+    }
+  #endif
   delay(1);
 }
 

@@ -278,10 +278,13 @@ void handle_jpg_stream(void) {
 }
 
 void handle_jpg(void) {
+  Serial.println("Handling jpg");
+  Serial.println("Getting client");
   WiFiClient client = server.client();
-
+  Serial.println("Running cam");
   cam.run();
   if (!client.connected()) {
+    Serial.println("Client not connected");
     return;
   }
   String response = "HTTP/1.1 200 OK\r\n";
@@ -292,6 +295,18 @@ void handle_jpg(void) {
 }
 
 void handleNotFound() {
+  String message = "Server is running (just not here!)\n\n";
+    message += "URI: ";
+    message += server.uri();
+    message += "\nMethod: ";
+    message += (server.method() == HTTP_GET) ? "GET" : "POST";
+    message += "\nArguments: ";
+    message += server.args();
+    message += "\n";
+    server.send(200, "text/plain", message);
+}
+
+void handleIndex () {
   String message = "Server is running!\n\n";
     message += "URI: ";
     message += server.uri();
@@ -391,9 +406,10 @@ void setup() {
 
 #ifdef NEW
   InitSoftAP();
-  
-  #ifdef WEBSERVER
-    server.on("/", HTTP_GET, handle_jpg_stream);
+  cam.init(espeyecam_config);
+  #ifdef WEBSERVER 
+    server.on("/", HTTP_GET, handleIndex);
+    server.on("/stream", HTTP_GET, handle_jpg_stream);
     server.on("/jpg", HTTP_GET, handle_jpg);
     server.onNotFound(handleNotFound);
     server.begin();
@@ -405,8 +421,7 @@ void setup() {
 
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
-  Serial.print("Setup Finished. Server Active at ");
-  Serial.print(WiFi.localIP());
+  Serial.print("Setup Finished.");
 }
 
 void loop() {

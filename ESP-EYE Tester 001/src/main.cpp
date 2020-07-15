@@ -1,6 +1,3 @@
-//#define OLD
-#define NEW
-//#define RTSP
 #define WEBSERVER
 
 //#define APWIFI
@@ -8,11 +5,6 @@
 #define MUDP
 
 #pragma region declarations
-#ifdef OLD
-#include "esp_camera.h"
-#include "esp_timer.h"
-#include <ESPAsyncWebServer.h>
-#endif
 
 #include "WiFi.h"
 #include "img_converters.h"
@@ -26,11 +18,11 @@
 #include <FS.h>
 #include "AsyncUDP.h"
 
-#ifdef NEW
 #include "CRtspSession.h"
 #include "OV2640.h"
 #include "OV2640Streamer.h"
-#endif
+
+#include <ArduinoJson.h>
 
 #define PWDN_GPIO_NUM    -1
 #define RESET_GPIO_NUM   -1
@@ -49,6 +41,7 @@
 #define HREF_GPIO_NUM    27
 #define PCLK_GPIO_NUM    25
 
+#define CONFIG_LOCATION "/config.json"
 #pragma endregion
 
 #pragma region HTML
@@ -93,14 +86,41 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>)rawliteral";
 #pragma endregion
 
-#pragma region Global
-const char* ID = "espDracon01";
+#define ID "espDracon01"
 
 AsyncUDP udp;
 char udpPacketBuffer[255];
-const char* ap_ssid = "Dracon24";
-const char* ap_password = "Rarceth1996!";
+const char* ap_ssid = "SJA_MODEM_01";
+const char* ap_password = "12345678";
 
+void openConfig () {
+  File file = SPIFFS.open(CONFIG_LOCATION, FILE_READ);
+  String data = file.readString();
+  Serial.println();
+  Serial.print("Data: ");
+  Serial.print(data);
+  Serial.println();
+  file.close();
+}
+
+void writeConfig (char* _mode, char* _ssid, char* _password, bool reset) {
+  File file = SPIFFS.open(CONFIG_LOCATION, FILE_WRITE);
+  if (file) {
+    Serial.println("Writing to file");
+    if (file.printf("{\"mode\":\"%s\",\"ssid\":\"%s\",\"password\":\"%s\"}", _mode, _ssid, _password)) {
+      Serial.println("Write successful");
+    } else {
+      Serial.println ("Write Failed");
+    }    
+  } else {
+    Serial.println("Cant write to file");
+  }
+  file.close();
+
+  if (reset) {
+    ESP.restart();
+  }
+}
 String IpAddress2String(const IPAddress& ipAddress)
 {
   return String(ipAddress[0]) + String(".") +\
@@ -115,18 +135,29 @@ void InitUDPPacket () {
     Serial.printf("Packet received, UDP.\nLength: %i\nData: ", packet.length());
     Serial.write(packet.data(), packet.length());
     Serial.println();
-    
+
     String dataString = (const char*)packet.data();
-    if (dataString == "#Status") {
+    Serial.print("|"+dataString+"|");
+
+    if (dataString == "#Status\n") {
       packet.printf("ID: %s, IP: %s", ID, IpAddress2String(udp.listenIP()));
     } else if (dataString == "#ID") {
       packet.printf("Data received on %s", ID);
     } else if (dataString == "ping") {
       packet.print("pong");
+    } else if (dataString == "rconfig") {
+      openConfig();
+      packet.print("Read config");
+    } else if (dataString == "wconfig") {
+      writeConfig("STA", "SJA_MODEM_01", "12345678", false);
+      packet.print("Wrote config");
+    } else if (dataString == "network") {
+      Serial.print("Updating network");
+      writeConfig("AP", ID, "12345678", true);
     } else {
       packet.print(".");
     }
-    Serial.print("|"+dataString+"|");
+    
   });
 }
 
@@ -142,11 +173,11 @@ void InitUDP () {
 }
 
 IPAddress softIP;
-void InitSoftAP () {
-  const char *hostname = "draconESP";
+void InitSoftAP (char* _ssid, char* _password) {
+  const char *hostname = _ssid;
   WiFi.mode(WIFI_MODE_AP);
   WiFi.persistent(false);
-  bool result = WiFi.softAP(hostname, "12345678");
+  bool result = WiFi.softAP(hostname, _password);
   WiFi.softAPConfig(IPAddress(192,168,1,1), IPAddress(192,168,1,1), IPAddress(255,255,255,0));
   
   delay(1000);
@@ -162,9 +193,9 @@ void InitSoftAP () {
   }
 }
 
-void InitSTA () {
+void InitSTA (char* _ssid, char* _password) {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ap_ssid, ap_password);
+  WiFi.begin(_ssid, _password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(50);
     Serial.println("#Connecting#");
@@ -176,64 +207,6 @@ void InitSTA () {
 
   Serial.println("IP Address: http://");
   Serial.println(WiFi.localIP());
-}
-
-#pragma endregion
-
-#ifdef OLD
-boolean takeNewPhoto;
-#define FILE_PHOTO "/photo.jpg"
-AsyncWebServer server(80);
-
-
-#pragma region espcam
-// Check if photo capture was successful
-bool checkPhoto( fs::FS &fs ) {
-  File f_pic = fs.open( FILE_PHOTO );
-  unsigned int pic_sz = f_pic.size();
-  return ( pic_sz > 100 );
-}
-
-// Capture Photo and Save it to SPIFFS
-void capturePhotoSaveSpiffs( void ) {
-  camera_fb_t * fb = NULL; // pointer
-  bool ok = 0; // Boolean indicating if the picture has been taken correctly
-
-  do {
-    // Take a photo with the camera
-    Serial.println("Taking a photo...");
-
-    fb = esp_camera_fb_get();
-    if (!fb) {
-      Serial.println("Camera capture failed");
-      return;
-    } else {
-      Serial.printf("Camera capture success, size: %i\n", fb->len);
-    }
-
-    // Photo file name
-    Serial.printf("Picture file name: %s\n", FILE_PHOTO);
-    File file = SPIFFS.open(FILE_PHOTO, FILE_WRITE);
-
-    // Insert the data in the photo file
-    if (!file) {
-      Serial.println("Failed to open file in writing mode");
-    }
-    else {
-      file.write(fb->buf, fb->len); // payload (image), payload length
-      Serial.print("The picture has been saved in ");
-      Serial.print(FILE_PHOTO);
-      Serial.print(" - Size: ");
-      Serial.print(file.size());
-      Serial.println(" bytes");
-    }
-    // Close the file
-    file.close();
-    esp_camera_fb_return(fb);
-
-    // check if file has been correctly saved in SPIFFS
-    ok = checkPhoto(SPIFFS);
-  } while ( !ok );
 }
 
 void CamInit () {
@@ -280,20 +253,45 @@ void CamInit () {
     Serial.printf("Camera init failed with error 0x%x", err);
   }
 }
-#pragma endregion
 
+void InitWiFi () {
+  Serial.println("Initializing wifi connection");
+  Serial.println("Opening config");
+  File file = SPIFFS.open(CONFIG_LOCATION, FILE_READ);
+  std::unique_ptr<char[]> buf(new char[file.size()]);
+  if (file) {
+    Serial.println("File opened. Reading");
+    file.readBytes(buf.get(), file.size());
 
-#endif
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, buf.get());
+    if (err) {
+      Serial.println("Config isnt json, or doesnt exist. F+");
+      InitSoftAP("draconESP", "12345678");
+    } else {
+      char* _ssid;
+      char* _password;
+      strlcpy (_ssid, doc["ssid"], doc["ssid"].size());
+      strlcpy (_password, doc["password"], doc["password"].size());
+      if (doc["mode"] == "STA") {
+        InitSTA(_ssid, _password);
+      } else {
+        InitSoftAP(_ssid, _password);
+      }
+    }
+    file.close();
+  } else {
+    Serial.println("Config isnt json, or doesnt exist. F-");
+    InitSoftAP("draconESP", "12345678");
+    file.close();
+    return;
+  }
+}
 
-#ifdef NEW 
 WebServer server(80);
 OV2640 cam;
-#ifdef RTSP
-WiFiServer rtspServer(8554);
-CStreamer *streamer;
-CRtspSession *session;
-#endif
 
+#pragma region WebServerHandlers
 void handle_jpg_stream(void) {
   Serial.print("Handling stream");
   WiFiClient client = server.client();
@@ -358,8 +356,7 @@ void handleIndex () {
     message += "\n";
     server.send(200, "text/plain", message);
 }
-
-#endif
+#pragma endregion
 
 #pragma region Blink
 void BlinkBoth_Async () {
@@ -416,16 +413,6 @@ void setup() {
   }
   PinSetup();
 
-#ifdef APWIFI
-  InitSoftAP();
-#endif
-#ifdef STAWIFI
-  InitSTA();
-#endif
-#ifdef MUDP
-  InitUDP();
-#endif
-#ifdef OLD
   if(!SPIFFS.begin(true)) {
     Serial.print("SPIFFS up failed");
     ESP.restart();
@@ -433,36 +420,19 @@ void setup() {
     delay(500);
   }
 
-  CamInit();
-  //InitUDP();
+  InitWiFi();
 
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
-    request->send_P(200, "text/html", index_html);
-  });
-
-  server.on("/capture", HTTP_GET, [](AsyncWebServerRequest * request) {
-    takeNewPhoto = true;
-    request->send_P(200, "text/plain", "Taking Photo");
-  });
-
-  server.on("/saved-photo", HTTP_GET, [](AsyncWebServerRequest * request) {
-    request->send(SPIFFS, FILE_PHOTO, "image/jpg", false);
-  });
-  server.begin();
+#ifdef MUDP
+  InitUDP();
 #endif
 
-#ifdef NEW
-  cam.init(espeyecam_config);
-  #ifdef WEBSERVER 
-    server.on("/", HTTP_GET, handleIndex);
-    server.on("/stream", HTTP_GET, handle_jpg_stream);
-    server.on("/jpg", HTTP_GET, handle_jpg);
-    server.onNotFound(handleNotFound);
-    server.begin();
-  #endif
-  #ifdef RTSP
-    rtspServer.begin();
-  #endif
+cam.init(espeyecam_config);
+#ifdef WEBSERVER 
+  server.on("/", HTTP_GET, handleIndex);
+  server.on("/stream", HTTP_GET, handle_jpg_stream);
+  server.on("/jpg", HTTP_GET, handle_jpg);
+  server.onNotFound(handleNotFound);
+  server.begin();
 #endif
 
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
@@ -471,52 +441,10 @@ void setup() {
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-#ifdef OLD
-  if (takeNewPhoto) {
-    capturePhotoSaveSpiffs();
-    takeNewPhoto = false;
-  }
-#endif
   #ifdef WEBSERVER
     server.handleClient();
-
   #endif
 
-  #ifdef RTSP
-    uint32_t msecPerFrame = 100;
-    static uint32_t lastimage = millis();
-
-    if (session) {
-      session->handleRequests(0);
-      uint32_t now = millis();
-      if (now > lastimage + msecPerFrame || now < lastimage) {
-        session->broadcastCurrentFrame(now);
-        lastimage = now;
-
-        now = millis();
-        if (now > lastimage + msecPerFrame) {
-          printf("Warning! Exceeding max framerate of %d ms\n", now - lastimage);
-        }
-      }
-
-      if (session->m_stopped) {
-        delete session;
-        delete streamer;
-        session = NULL;
-        streamer = NULL;
-      }
-    } else {
-      WiFiClient client = rtspServer.accept();
-      if (client) {
-        streamer = new OV2640Streamer(&client, cam);
-        session = new CRtspSession(&client, streamer);
-        Serial.print("Client: ");
-        Serial.print(client.remoteIP());
-        Serial.println();
-      }
-    }
-  #endif
   delay(1);
 }
 

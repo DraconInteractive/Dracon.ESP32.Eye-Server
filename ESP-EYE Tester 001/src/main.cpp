@@ -1,7 +1,11 @@
 //#define OLD
 #define NEW
-#define RTSP
+//#define RTSP
 #define WEBSERVER
+
+//#define APWIFI
+#define STAWIFI
+#define MUDP
 
 #pragma region declarations
 #ifdef OLD
@@ -88,13 +92,99 @@ const char index_html[] PROGMEM = R"rawliteral(
 </script>
 </html>)rawliteral";
 #pragma endregion
+
+#pragma region Global
+const char* ID = "espDracon01";
+
+AsyncUDP udp;
+char udpPacketBuffer[255];
+const char* ap_ssid = "Dracon24";
+const char* ap_password = "Rarceth1996!";
+
+String IpAddress2String(const IPAddress& ipAddress)
+{
+  return String(ipAddress[0]) + String(".") +\
+  String(ipAddress[1]) + String(".") +\
+  String(ipAddress[2]) + String(".") +\
+  String(ipAddress[3])  ;
+}
+
+void InitUDPPacket () {
+  IPAddress _targetIP = IPAddress(192,168,1,100);
+  udp.onPacket([_targetIP](AsyncUDPPacket packet) {
+    Serial.printf("Packet received, UDP.\nLength: %i\nData: ", packet.length());
+    Serial.write(packet.data(), packet.length());
+    Serial.println();
+    
+    String dataString = (const char*)packet.data();
+    if (dataString == "#Status") {
+      packet.printf("ID: %s, IP: %s", ID, IpAddress2String(udp.listenIP()));
+    } else if (dataString == "#ID") {
+      packet.printf("Data received on %s", ID);
+    } else if (dataString == "ping") {
+      packet.print("pong");
+    } else {
+      packet.print(".");
+    }
+    Serial.print("|"+dataString+"|");
+  });
+}
+
+void InitUDP () {
+  Serial.print("Initialising UDP Stream");
+  
+  if (udp.listenMulticast(IPAddress(239,3,3,4), 11000)) {
+    Serial.println ("UDP Listening on 239.3.3.4:11000");
+
+    InitUDPPacket();
+  }
+  delay(100);
+}
+
+IPAddress softIP;
+void InitSoftAP () {
+  const char *hostname = "draconESP";
+  WiFi.mode(WIFI_MODE_AP);
+  WiFi.persistent(false);
+  bool result = WiFi.softAP(hostname, "12345678");
+  WiFi.softAPConfig(IPAddress(192,168,1,1), IPAddress(192,168,1,1), IPAddress(255,255,255,0));
+  
+  delay(1000);
+  if (!result) {
+    Serial.println("Soft AP Config Failed");
+    return;
+  } else {
+    Serial.println("Soft AP Config Success");
+    Serial.print("Mac ADDR: ");
+    Serial.println(WiFi.softAPmacAddress());
+    softIP = WiFi.softAPIP();
+    Serial.println(softIP);
+  }
+}
+
+void InitSTA () {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ap_ssid, ap_password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(50);
+    Serial.println("#Connecting#");
+  }
+  Serial.println("Wifi Connected");
+  Serial.println(WiFi.status());
+
+  delay(100);
+
+  Serial.println("IP Address: http://");
+  Serial.println(WiFi.localIP());
+}
+
+#pragma endregion
+
 #ifdef OLD
 boolean takeNewPhoto;
 #define FILE_PHOTO "/photo.jpg"
 AsyncWebServer server(80);
-AsyncUDP udp;
-const char* ap_ssid = "SJA_MODEM_01";
-const char* ap_password = "12345678";
+
 
 #pragma region espcam
 // Check if photo capture was successful
@@ -192,69 +282,20 @@ void CamInit () {
 }
 #pragma endregion
 
-void InitUDP () {
-  Serial.print("Initialising UDP Stream");
-  IPAddress _targetIP = IPAddress(192,168,1,1);
-  if (udp.listenMulticast(IPAddress(239,3,3,4), 11000)) {
-    Serial.println ("UDP Listening on 239.3.3.4:11000");
 
-    udp.onPacket([_targetIP](AsyncUDPPacket packet) {
-      Serial.printf("Packet received, UDP.\nLength: %i\nData: ");
-      Serial.write(packet.data(), packet.length());
-      Serial.println();
-      packet.print("Data received on DraconESP");
-    });
-  }
-  delay(100);
-}
-
-void InitSTAWifi () {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ap_ssid, ap_password);
-  while (WiFi.status() != WL_CONNECTED) {
-    BlinkRed(350);
-    delay(50);
-    Serial.println("#Connecting#");
-  }
-  Serial.println("Wifi Connected");
-  Serial.println(WiFi.status());
-
-  delay(100);
-
-  Serial.println("IP Address: http://");
-  Serial.println(WiFi.localIP());
-  
-}
 #endif
 
 #ifdef NEW 
 WebServer server(80);
 OV2640 cam;
+#ifdef RTSP
 WiFiServer rtspServer(8554);
 CStreamer *streamer;
 CRtspSession *session;
-IPAddress softIP;
-void InitSoftAP () {
-  const char *hostname = "draconESP";
-  WiFi.mode(WIFI_MODE_AP);
-  WiFi.persistent(false);
-  bool result = WiFi.softAP(hostname, "12345678");
-  WiFi.softAPConfig(IPAddress(192,168,1,1), IPAddress(192,168,1,1), IPAddress(255,255,255,0));
-  
-  delay(1000);
-  if (!result) {
-    Serial.println("Soft AP Config Failed");
-    return;
-  } else {
-    Serial.println("Soft AP Config Success");
-    Serial.print("Mac ADDR: ");
-    Serial.println(WiFi.softAPmacAddress());
-    softIP = WiFi.softAPIP();
-    Serial.println(softIP);
-  }
-}
+#endif
 
 void handle_jpg_stream(void) {
+  Serial.print("Handling stream");
   WiFiClient client = server.client();
   String response = "HTTP/1.1 200 OK\r\n";
   response += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
@@ -279,9 +320,7 @@ void handle_jpg_stream(void) {
 
 void handle_jpg(void) {
   Serial.println("Handling jpg");
-  Serial.println("Getting client");
   WiFiClient client = server.client();
-  Serial.println("Running cam");
   cam.run();
   if (!client.connected()) {
     Serial.println("Client not connected");
@@ -295,6 +334,7 @@ void handle_jpg(void) {
 }
 
 void handleNotFound() {
+  Serial.println("Serving not found");
   String message = "Server is running (just not here!)\n\n";
     message += "URI: ";
     message += server.uri();
@@ -307,6 +347,7 @@ void handleNotFound() {
 }
 
 void handleIndex () {
+  Serial.println("Serving index");
   String message = "Server is running!\n\n";
     message += "URI: ";
     message += server.uri();
@@ -367,7 +408,6 @@ void PinSetup () {
   pinMode(14, INPUT_PULLUP);
 }
 
-
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
@@ -376,8 +416,16 @@ void setup() {
   }
   PinSetup();
 
+#ifdef APWIFI
+  InitSoftAP();
+#endif
+#ifdef STAWIFI
+  InitSTA();
+#endif
+#ifdef MUDP
+  InitUDP();
+#endif
 #ifdef OLD
-  InitSTAWifi();
   if(!SPIFFS.begin(true)) {
     Serial.print("SPIFFS up failed");
     ESP.restart();
@@ -386,7 +434,6 @@ void setup() {
   }
 
   CamInit();
-  cam.init(esp32cam_config);
   //InitUDP();
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
@@ -405,7 +452,6 @@ void setup() {
 #endif
 
 #ifdef NEW
-  InitSoftAP();
   cam.init(espeyecam_config);
   #ifdef WEBSERVER 
     server.on("/", HTTP_GET, handleIndex);
@@ -434,7 +480,7 @@ void loop() {
 #endif
   #ifdef WEBSERVER
     server.handleClient();
-    
+
   #endif
 
   #ifdef RTSP

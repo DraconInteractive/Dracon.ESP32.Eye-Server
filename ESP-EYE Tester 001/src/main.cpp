@@ -153,7 +153,7 @@ void InitUDPPacket () {
       packet.print("Wrote config");
     } else if (dataString == "network") {
       Serial.print("Updating network");
-      writeConfig("AP", ID, "12345678", true);
+      writeConfig("STA", "SJA_MODEM_01", "12345678", true);
     } else {
       packet.print(".");
     }
@@ -263,16 +263,23 @@ void InitWiFi () {
     Serial.println("File opened. Reading");
     file.readBytes(buf.get(), file.size());
 
-    StaticJsonDocument<256> doc;
+    DynamicJsonDocument doc(512);
     DeserializationError err = deserializeJson(doc, buf.get());
     if (err) {
       Serial.println("Config isnt json, or doesnt exist. F+");
       InitSoftAP("draconESP", "12345678");
     } else {
-      char* _ssid;
-      char* _password;
-      strlcpy (_ssid, doc["ssid"], doc["ssid"].size());
-      strlcpy (_password, doc["password"], doc["password"].size());
+      JsonObject obj = doc.as<JsonObject>();
+      String _s = obj["ssid"];
+      String _p = obj["password"];
+      int sn = _s.length();
+      int pn = _p.length();
+      char _ssid[sn + 1];
+      char _password[pn + 1];
+      strcpy(_ssid, _s.c_str());
+      strcpy(_password, _p.c_str());
+      Serial.printf("SSID: %s", _ssid);
+      Serial.printf("Pass: %s", _password);
       if (doc["mode"] == "STA") {
         InitSTA(_ssid, _password);
       } else {
@@ -299,9 +306,10 @@ void handle_jpg_stream(void) {
   response += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
   server.sendContent(response);
 
-  while (1) {
+  while (client.connected()) {
     cam.run();
     if (!client.connected()) {
+      Serial.print("Client disconnected");
       break;
     }
     response = "--frame\r\n";
@@ -314,6 +322,7 @@ void handle_jpg_stream(void) {
       break;
     }
   }
+  Serial.print("Finished");
 }
 
 void handle_jpg(void) {

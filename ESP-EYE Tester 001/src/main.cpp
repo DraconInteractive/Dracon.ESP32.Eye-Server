@@ -315,6 +315,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
         Serial.println();
         Serial.println("*********");
       }
+      pCharacteristic->setValue(value);
     }
 };
 

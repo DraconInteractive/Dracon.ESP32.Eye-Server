@@ -24,6 +24,13 @@
 
 #include <ArduinoJson.h>
 
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+
+#define BLE_SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define BLE_CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
 #define PWDN_GPIO_NUM    -1
 #define RESET_GPIO_NUM   -1
 #define XCLK_GPIO_NUM    4
@@ -295,6 +302,40 @@ void InitWiFi () {
   }
 }
 
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string value = pCharacteristic->getValue();
+
+      if (value.length() > 0) {
+        Serial.println("*********");
+        Serial.print("New value: ");
+        for (int i = 0; i < value.length(); i++)
+          Serial.print(value[i]);
+
+        Serial.println();
+        Serial.println("*********");
+      }
+    }
+};
+
+void InitBLE () {
+  Serial.println("Intializing BLE");
+  BLEDevice::init("draconESP01");
+  BLEServer *pServer = BLEDevice::createServer();
+  BLEService *pService = pServer->createService(BLE_SERVICE_UUID);
+  BLECharacteristic *pCharacteristic = pService->createCharacteristic(BLE_CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+  pCharacteristic->setCallbacks(new MyCallbacks());
+  pCharacteristic->setValue("Hello World draconBLE");
+  pService->start();
+
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  Serial.println("BLE Characteristic Defined");
+}
 WebServer server(80);
 OV2640 cam;
 
@@ -429,13 +470,15 @@ void setup() {
     delay(500);
   }
 
-  InitWiFi();
-
+  InitBLE();
+  //InitWiFi();
+  InitSTA("SJA_MODEM_02","12345678");
 #ifdef MUDP
-  InitUDP();
+  //InitUDP();
 #endif
-
+Serial.println("Initialising camera");
 cam.init(espeyecam_config);
+Serial.println ("Setting up web server endpoints");
 #ifdef WEBSERVER 
   server.on("/", HTTP_GET, handleIndex);
   server.on("/stream", HTTP_GET, handle_jpg_stream);

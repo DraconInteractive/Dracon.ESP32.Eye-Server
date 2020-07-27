@@ -3,6 +3,7 @@
 //#define APWIFI
 #define STAWIFI
 #define MUDP
+//#define PROTO
 
 #pragma region declarations
 
@@ -319,6 +320,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
+#ifdef PROTO
 void InitBLE () {
   Serial.println("Intializing BLE");
   BLEDevice::init("draconESP01");
@@ -337,6 +339,7 @@ void InitBLE () {
   BLEDevice::startAdvertising();
   Serial.println("BLE Characteristic Defined");
 }
+#endif
 WebServer server(80);
 OV2640 cam;
 
@@ -470,8 +473,9 @@ void setup() {
   } else {
     delay(500);
   }
-
+  #ifdef PROTO
   InitBLE();
+  #endif
   //InitWiFi();
   InitSTA("SJA_MODEM_02","12345678");
 #ifdef MUDP

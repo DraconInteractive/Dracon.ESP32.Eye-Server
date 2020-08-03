@@ -1,0 +1,4 @@
+{
+    "ssid":"Dracon24",
+    "password":"Rarceth1996!"
+}

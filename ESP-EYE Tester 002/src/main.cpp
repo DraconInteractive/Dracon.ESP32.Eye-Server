@@ -30,12 +30,15 @@
 const char* ID = "espDracon02";
 
 AsyncUDP udp;
-AsyncUDP delayedUDP;
+AsyncUDP udp2;
 WebServer server(80);
 
 char udpPacketBuffer[255];
 const char* ap_ssid = "Dracon24";
 const char* ap_password = "Rarceth1996!";
+
+void InitUDP2 (IPAddress target);
+void InitUDP();
 
 String IPAddressToString(const IPAddress& ipAddress)
 {
@@ -45,30 +48,71 @@ String IPAddressToString(const IPAddress& ipAddress)
   String(ipAddress[3])  ;
 }
 
+void HandleUDPCommands (String dataString, AsyncUDPPacket &packet) {
+    Serial.println("Handling command data");
+    if (dataString == "#Status") {
+      packet.printf("ID: %s, IP: %s", ID, IPAddressToString(udp.listenIP()).c_str());
+    } else if (dataString == "#ID") {
+      packet.printf("Data received on %s", ID);
+    } else if (dataString == "ping") {
+      packet.print("pong");
+    } else if (dataString == "reset server") {
+      ESP.restart();
+    } else if (dataString == "open stream") {
+      Serial.println("Open Stream command detected");
+      Serial.print("Attempting to open stream to: ");
+      IPAddress _target = packet.remoteIP();
+      Serial.print(IPAddressToString(_target) + ":11000");
+      Serial.println();
+      if (udp2.connected()) {
+        udp2.close();
+      }
+      InitUDP2(_target);
+    } else if (dataString == "close stream") {
+      Serial.println("Closing UDP2");
+      ESP.restart();
+    } else {
+      packet.print(".");
+      Serial.println("No Command Detected for phrase \"" + dataString + "\"");
+    }
+}
+
+void InitUDP2 (IPAddress target) {
+  Serial.print ("Initialising UDP2 Stream on target IP. Target IP: ");
+  Serial.print (target);
+  Serial.println();
+
+  if(udp2.connect(target, 11000)) {
+    Serial.print("UDP2 connected to target: ");
+    Serial.printf("%s", IPAddressToString(target).c_str());
+    Serial.println();
+
+    udp.onPacket([](AsyncUDPPacket packet) {
+        Serial.printf("Packet received, UDP2.\nLength: %i\nData: ", packet.length());
+        Serial.write(packet.data(), packet.length());
+        Serial.println();
+
+        String dataString = (const char*)packet.data();
+        HandleUDPCommands(dataString, packet);
+    });
+  }
+}
+
 void InitUDP () {
   Serial.print("Initialising UDP Stream");
   
-  if (udp.listenMulticast(IPAddress(239,3,3,4), 11000)) {
-    Serial.println ("UDP Listening on 239.3.3.4:11000");
+  if (udp.listenMulticast(IPAddress(239,3,3,3), 11000)) {
+    Serial.println ("UDP Listening on 239.3.3.3:11000");
 
     udp.onPacket([](AsyncUDPPacket packet) {
         Serial.printf("Packet received, UDP.\nLength: %i\nData: ", packet.length());
-        Serial.write(packet.data(), packet.length());
-        Serial.println();
         
         String dataString = (const char*)packet.data();
-        if (dataString == "#Status") {
-          packet.printf("ID: %s, IP: %s", ID, IPAddressToString(udp.listenIP()).c_str());
-        } else if (dataString == "#ID") {
-          packet.printf("Data received on %s", ID);
-        } else if (dataString == "ping") {
-          packet.print("pong");
-        } else if (dataString == "reset server") {
-          ESP.restart();
-        } else {
-          packet.print(".");
-        }
+        Serial.println(dataString);
+
+        HandleUDPCommands(dataString, packet);
         Serial.print("|"+dataString+"|");
+        Serial.println();
     });
   }
   delay(100);
@@ -119,8 +163,10 @@ void handleIndex () {
 
 void handleRestart () {
   Serial.println("Restarting");
-  String message = "Server is restarting!\n\n";
-  server.send(200, "text/plain", message);
+  server.sendHeader("Location","/");        // Add a header to respond with a new location for the browser to go to the home page again
+  server.send(303);     
+  delay(100);
+  ESP.restart();
 }
 
 void handleAudio () {
@@ -133,7 +179,7 @@ void handleAudio () {
   GetAudioStream(client, server);
 }
 #pragma endregion
-const char* loginURL = "draconstorage.blob.core.windows.net/esp-dracon/loginData.txt";
+const char* loginURL = "https://draconstorage.blob.core.windows.net/esp-dracon/loginData.txt?sp=r&st=2020-08-03T10:43:01Z&se=2050-08-03T18:43:01Z&spr=https&sv=2019-12-12&sr=b&sig=UbIdG3X3v18CdHB0GAuZ%2BvOtL2BghATFLK24PaaNq%2F4%3D";
 String httpRequest (const char *host, uint16_t port) {
     WiFiClient client = server.client();
     String total = "";
@@ -171,6 +217,9 @@ void findSuitableNetwork () {
     } else if (res == "SJA_MODEM_02") {
       finRes = res;
       break;
+    } else if (res == "AndroidAP391A") {
+      finRes = res;
+      break;
     }
   }
   if (finRes == "Dracon24") {
@@ -180,6 +229,10 @@ void findSuitableNetwork () {
   } else if (finRes == "SJA_MODEM_02") {
     Serial.println("Found Dracon Work Network");
     ap_ssid = "SJA_MODEM_02";
+    ap_password = "12345678";
+  } else if (finRes == "AndroidAP391A") {
+    Serial.println("Found Dracon Mobile Network");
+    ap_ssid = "AndroidAP391A";
     ap_password = "12345678";
   }
 /*
@@ -260,6 +313,8 @@ void setup () {
     Serial.print("Setup Finished.");
 }
 
+int udp2Counter = 0;
+int whiteValue = 0;
 void loop () {
     if (digitalRead(15) == 0) {
         Serial.println("Resetting Wifi");
@@ -268,6 +323,21 @@ void loop () {
     }
 
     server.handleClient();
+    if (udp2.connected()) {
+      udp2Counter++;
+      if (udp2Counter > 250) {
+        udp2Counter = 0;
+        udp2.print("dataSend");
 
+        if (whiteValue == 0) {
+          whiteValue = 1;
+          WriteToLED(false, true, HIGH);
+        } else {
+          whiteValue = 0;
+          WriteToLED(false, true, LOW);
+        }
+      }
+    }
+    
     delay(1);
 }

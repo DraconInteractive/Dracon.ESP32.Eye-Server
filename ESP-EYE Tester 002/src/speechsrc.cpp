@@ -12,7 +12,7 @@
 #define READ_DELAY 9000
 
 QueueHandle_t sndQueue;
-int audio_chunksize = 128;
+int audio_chunksize = 16;
 static src_cfg_t srcif;
 int state = 0;
 
